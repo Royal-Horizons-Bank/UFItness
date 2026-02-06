@@ -1,12 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { 
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, ScrollView, Dimensions, useColorScheme 
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions, useColorScheme 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import Svg, { Line, Rect, G, Text as SvgText } from 'react-native-svg';
 import { useUser } from '../context/UserContext';
 import { PALETTE } from '../constants/theme';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const { width } = Dimensions.get('window');
 const SCREEN_PADDING = 40; 
@@ -21,26 +22,21 @@ const getLocalISODate = (date) => {
 
 const formatDateRange = (start, end, filter) => {
   const options = { month: 'short', day: 'numeric' };
-  
   if (filter === 'Y') return `${start.getFullYear()}`;
   if (filter === 'D') return start.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  
   if (filter === '6M') {
     return `${start.toLocaleDateString('en-US', { month: 'short' })} – ${end.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`;
   }
-
   return `${start.toLocaleDateString('en-US', options)} – ${end.toLocaleDateString('en-US', options)}`;
 };
 
 const formatSelectedDate = (item, filter) => {
   if (!item || !item.dateRef) return '';
   const d = item.dateRef;
-  
   if (filter === 'D') return `${d.getHours()}:00 - ${d.getHours() + 1}:00`;
   if (filter === 'W') return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
   if (filter === 'M') return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   if (filter === '6M' || filter === 'Y') return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  
   return '';
 };
 
@@ -69,23 +65,42 @@ const HistoryScreen = () => {
   const navigation = useNavigation();
   const route = useRoute();
   
-  // Theme Hooks
   const theme = useColorScheme() || 'dark';
   const colors = PALETTE[theme];
   const styles = getStyles(theme, colors);
 
-  const { metric, color, label, unit } = route.params || { 
-    metric: 'calories', color: '#FF9500', label: 'Calories', unit: 'kcal' 
+  // Default metric params, replaced by user prefs logic below
+  const { metric, color, label } = route.params || { 
+    metric: 'calories', color: '#FF9500', label: 'Calories'
   };
   
   const { userData } = useUser();
   const history = userData?.history || [];
+  const preferences = userData?.preferences?.units || {};
+
   const [filter, setFilter] = useState('W'); // D, W, M, 6M, Y
   const [selectedItem, setSelectedItem] = useState(null);
 
   useEffect(() => {
     setSelectedItem(null);
   }, [filter]);
+
+  // --- UNIT LOGIC ---
+  // Determine display unit and multiplier based on metric type
+  const { displayUnit, multiplier, decimals } = useMemo(() => {
+    if (metric === 'calories') {
+        const u = preferences.energy || 'kcal';
+        return { displayUnit: u, multiplier: u === 'kJ' ? 4.184 : 1, decimals: 0 };
+    }
+    if (metric === 'hydration') {
+        const u = preferences.volume || 'ml';
+        if (u === 'oz') return { displayUnit: 'oz', multiplier: 0.033814, decimals: 0 };
+        if (u === 'glasses') return { displayUnit: 'glasses', multiplier: 1/240, decimals: 1 };
+        return { displayUnit: 'ml', multiplier: 1, decimals: 0 };
+    }
+    // Default (steps, minutes, workouts)
+    return { displayUnit: route.params.unit, multiplier: 1, decimals: 0 };
+  }, [metric, preferences]);
   
   // --- DATA ENGINE ---
   const { chartData, rangeLabel, totalSum, average, trend, barConfig } = useMemo(() => {
@@ -194,12 +209,17 @@ const HistoryScreen = () => {
       if (!item.date) return;
       const itemDate = new Date(item.date);
       let val = 0;
+      
+      // Extract raw metric value
       if (metric === 'workouts' && item.type === 'workout') val = 1;
       if (metric === 'calories' && item.type === 'workout') val = Number(item.calories) || 0;
       if (metric === 'minutes' && item.type === 'workout') val = Number(item.duration) || 0;
       if (metric === 'steps' && item.type === 'steps') val = Number(item.count) || 0;
       if (metric === 'hydration' && (item.type === 'water' || item.type === 'hydration')) val = Number(item.amount) || 0;
       
+      // Convert to preferred unit IMMEDIATELY before adding to bucket
+      val = val * multiplier; 
+
       if (val === 0) return;
 
       if (filter === 'D') {
@@ -224,26 +244,40 @@ const HistoryScreen = () => {
       if (metric === 'steps') currentVal = userData.stats?.steps || 0;
       if (metric === 'hydration') currentVal = userData.stats?.hydrationCurrent || 0;
 
+      // Convert current value
+      currentVal = currentVal * multiplier;
+
       if (currentVal > 0) {
         if (filter === 'D') {
            const currentHour = now.getHours();
-           if (buckets[currentHour]) buckets[currentHour].value = Math.max(buckets[currentHour].value, currentVal / 12); 
+           // Distribute accumulated steps/water roughly for today view? 
+           // Simpler: Just ensure the current bucket has at least something if we are tracking accumulated daily totals.
+           // However, history usually contains the logs. If 'hydration', it's logged. Steps is Pedometer.
+           if (metric === 'steps') {
+             // For daily steps, we might not have hourly breakdown in history, just total. 
+             // We'll skip complex distribution for now to keep UI safe.
+             if (buckets[currentHour]) buckets[currentHour].value = Math.max(buckets[currentHour].value, currentVal / 12); 
+           }
         } else if (filter === 'W' || filter === 'M') {
            const todayKey = getLocalISODate(now);
            const b = buckets.find(x => x.key === todayKey);
-           if (b) b.value = Math.max(b.value, currentVal);
+           // Hydration is additive in history, so we rely on history aggregation above.
+           // Steps is a running total in stats.steps vs history. 
+           if (metric === 'steps' && b) b.value = Math.max(b.value, currentVal);
+           if (metric === 'hydration' && b) b.value = Math.max(b.value, currentVal);
         } else if (filter === 'Y' || filter === '6M') {
            const k = `${now.getFullYear()}-${now.getMonth()}`;
            const b = buckets.find(x => x.key === k);
-           if (b) b.value = Math.max(b.value, currentVal);
+           if (metric === 'steps' && b) b.value = Math.max(b.value, currentVal);
+           if (metric === 'hydration' && b) b.value = Math.max(b.value, currentVal);
         }
       }
     }
 
     const total = buckets.reduce((a, b) => a + b.value, 0);
-    const avg = buckets.length > 0 ? Math.round(total / buckets.length) : 0;
+    const avg = buckets.length > 0 ? (total / buckets.length) : 0;
     
-    // Trend
+    // Trend logic
     const mid = Math.floor(buckets.length / 2);
     const firstHalfAvg = buckets.slice(0, mid).reduce((a,b)=>a+b.value,0) / mid;
     const secondHalfAvg = buckets.slice(mid).reduce((a,b)=>a+b.value,0) / (buckets.length - mid);
@@ -258,7 +292,7 @@ const HistoryScreen = () => {
       trend: { dir: trendDir, pct: Math.abs(trendPct) },
       barConfig: { width: finalBarWidth, gap: finalGap }
     };
-  }, [filter, history, metric, userData.stats]);
+  }, [filter, history, metric, userData.stats, multiplier]);
 
   const maxVal = Math.max(...chartData.map(d => d.value)) || 10;
   
@@ -274,9 +308,16 @@ const HistoryScreen = () => {
     }
   };
 
+  const fmt = (num) => {
+      if (!num && num !== 0) return '0';
+      // If decimals > 0, use fixed, else integer
+      if (decimals > 0) return num.toFixed(decimals);
+      return Math.round(num).toLocaleString();
+  };
+
   const displayLabel = selectedItem ? formatSelectedDate(selectedItem, filter) : rangeLabel;
-  const displayValue = selectedItem ? selectedItem.value.toLocaleString() : (filter === 'D' ? totalSum.toLocaleString() : average.toLocaleString());
-  const displayUnit = selectedItem ? unit : (filter === 'D' ? `total ${unit}` : `avg ${unit}`);
+  const displayValue = selectedItem ? fmt(selectedItem.value) : (filter === 'D' ? fmt(totalSum) : fmt(average));
+  const displayUnitLabel = selectedItem ? displayUnit : (filter === 'D' ? `total ${displayUnit}` : `avg ${displayUnit}`);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -296,12 +337,8 @@ const HistoryScreen = () => {
         <View style={[styles.segmentContainer, { backgroundColor: colors.surface }]}>
           {['D', 'W', 'M', '6M', 'Y'].map((f) => (
             <FilterPill 
-              key={f} 
-              label={f} 
-              active={filter === f} 
-              colors={colors}
-              styles={styles} 
-              onPress={() => setFilter(f)} 
+              key={f} label={f} active={filter === f} 
+              colors={colors} styles={styles} onPress={() => setFilter(f)} 
             />
           ))}
         </View>
@@ -310,7 +347,7 @@ const HistoryScreen = () => {
         <View style={styles.summaryBlock}>
           <Text style={styles.rangeLabel}>{displayLabel}</Text>
           <Text style={[styles.averageBig, { color: colors.text }]}>
-             {displayValue} <Text style={styles.unitSmall}>{displayUnit}</Text>
+             {displayValue} <Text style={styles.unitSmall}>{displayUnitLabel}</Text>
           </Text>
         </View>
 
@@ -326,14 +363,8 @@ const HistoryScreen = () => {
               {/* Grid Lines */}
               {[0, 0.33, 0.66, 1].map((pos, i) => (
                 <Line
-                  key={i}
-                  x1="0"
-                  y1={pos * (CHART_HEIGHT - 30)}
-                  x2={finalChartWidth}
-                  y2={pos * (CHART_HEIGHT - 30)}
-                  stroke={theme === 'dark' ? '#333' : '#E5E5EA'}
-                  strokeDasharray="4, 4"
-                  strokeWidth="1"
+                  key={i} x1="0" y1={pos * (CHART_HEIGHT - 30)} x2={finalChartWidth} y2={pos * (CHART_HEIGHT - 30)}
+                  stroke={theme === 'dark' ? '#333' : '#E5E5EA'} strokeDasharray="4, 4" strokeWidth="1"
                 />
               ))}
 
@@ -358,18 +389,14 @@ const HistoryScreen = () => {
                 return (
                   <G key={index} onPress={() => handleBarPress(item)}>
                     <Rect
-                       x={xPos - (barConfig.gap / 2)}
-                       y={0}
-                       width={barConfig.width + barConfig.gap}
-                       height={CHART_HEIGHT}
+                       x={xPos - (barConfig.gap / 2)} y={0}
+                       width={barConfig.width + barConfig.gap} height={CHART_HEIGHT}
                        fill="transparent"
                     />
                     
                     <Rect
-                      x={xPos}
-                      y={CHART_HEIGHT - barHeight - 30}
-                      width={barConfig.width}
-                      height={barHeight}
+                      x={xPos} y={CHART_HEIGHT - barHeight - 30}
+                      width={barConfig.width} height={barHeight}
                       rx={barConfig.width / 4} 
                       fill={item.value > 0 ? color : (theme === 'dark' ? "#2C2C2E" : "#E5E5EA")} 
                       opacity={isDimmed ? 0.3 : (item.value > 0 ? 1 : 0.7)}
@@ -377,12 +404,9 @@ const HistoryScreen = () => {
 
                     {item.label ? (
                       <SvgText
-                        x={xPos + (barConfig.width / 2)}
-                        y={CHART_HEIGHT - 5}
-                        fontSize="10"
-                        fill={isSelected ? color : colors.textDim}
-                        textAnchor="middle"
-                        fontWeight={isSelected ? "bold" : "600"}
+                        x={xPos + (barConfig.width / 2)} y={CHART_HEIGHT - 5}
+                        fontSize="10" fill={isSelected ? color : colors.textDim}
+                        textAnchor="middle" fontWeight={isSelected ? "bold" : "600"}
                       >
                         {item.label}
                       </SvgText>
@@ -422,7 +446,7 @@ const HistoryScreen = () => {
                 <Text style={[styles.cardHeaderTitle, { color }]}>{label} Summary</Text>
              </View>
              <Text style={[styles.cardBody, { color: colors.text }]}>
-               In {rangeLabel}, your total accumulation was <Text style={{fontWeight:'bold', color: colors.text}}>{totalSum.toLocaleString()} {unit}</Text>.
+               In {rangeLabel}, your total accumulation was <Text style={{fontWeight:'bold', color: colors.text}}>{fmt(totalSum)} {displayUnit}</Text>.
              </Text>
            </View>
         </View>

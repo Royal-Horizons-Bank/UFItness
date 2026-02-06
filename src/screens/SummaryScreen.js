@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { 
-  View, Text, StyleSheet, ScrollView, SafeAreaView, 
+  View, Text, StyleSheet, ScrollView,
   useColorScheme, TouchableOpacity, RefreshControl 
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Circle, G } from 'react-native-svg';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { PALETTE } from '../constants/theme';
 import { useUser } from '../context/UserContext';
 import { useNavigation } from '@react-navigation/native';
@@ -15,13 +16,16 @@ const SummaryScreen = () => {
   const styles = getStyles(theme, colors);
   const navigation = useNavigation();
   
-  const { userData, addWater, refreshData } = useUser();
+  const { userData, addWater, refreshData, converters } = useUser();
   const { stats, schedule = [], name, history = [] } = userData || {}; 
   const [refreshing, setRefreshing] = useState(false);
   const [greeting, setGreeting] = useState('Good Morning,');
 
+  const preferences = userData.preferences?.units || {};
+
   const DAILY_STEP_GOAL = stats?.stepGoal || 10000;
-  const DAILY_WATER_GOAL = stats?.hydrationGoal || 2500;
+  // Hydration stored in ML, needs converting for goal display? 
+  // We'll handle conversion inside the component render.
 
   useEffect(() => {
     const hour = new Date().getHours();
@@ -100,8 +104,8 @@ const SummaryScreen = () => {
         onPress={() => navigation.navigate('History', { 
           metric: 'calories', 
           label: 'Active Energy', 
-          color: '#FF9500', // Matches History Screen Orange
-          unit: 'kcal' 
+          color: '#FF9500', 
+          unit: 'kcal' // Will be overridden by prefs in HistoryScreen
         })}
       >
         <View style={[styles.chartCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -122,7 +126,6 @@ const SummaryScreen = () => {
                       styles.barFill, 
                       { 
                         height: `${Math.max(item.heightPercent, 5)}%`, 
-                        // UPDATED: Use Orange (#FF9500) for consistency
                         backgroundColor: item.isToday ? '#FF9500' : (item.value > 0 ? '#555' : '#333') 
                       }
                     ]} 
@@ -156,7 +159,27 @@ const SummaryScreen = () => {
     );
   };
 
-  const CircularStats = ({ value, goal, color, label, subLabel, icon }) => {
+  const CircularStats = ({ value, goal, color, label, subLabel, icon, type }) => {
+    // 1. Convert Value & Goal based on type
+    let displayVal = value;
+    let displayGoal = goal;
+    let unitLabel = subLabel;
+
+    if (type === 'hydration') {
+      const u = preferences.volume || 'ml';
+      if (u === 'oz') { 
+        displayVal = (value * 0.033814).toFixed(0); 
+        displayGoal = (goal * 0.033814).toFixed(0);
+        unitLabel = "OZ";
+      } else if (u === 'glasses') {
+        displayVal = (value / 240).toFixed(1);
+        displayGoal = (goal / 240).toFixed(1);
+        unitLabel = "GLASSES";
+      } else {
+        unitLabel = "ML";
+      }
+    }
+
     const safeValue = Number(value) || 0;
     const safeGoal = Number(goal) || 1;
     const size = 90;
@@ -180,14 +203,19 @@ const SummaryScreen = () => {
             </G>
           </Svg>
           <View style={{ position: 'absolute', alignItems: 'center' }}>
-            <Text style={{ fontSize: 18, fontWeight: 'bold', color: colors.text }}>{safeValue.toLocaleString()}</Text>
-            <Text style={{ fontSize: 10, color: colors.textDim, fontWeight: '600' }}>{subLabel}</Text>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: colors.text }}>
+                {Number(displayVal).toLocaleString()}
+            </Text>
+            <Text style={{ fontSize: 10, color: colors.textDim, fontWeight: '600' }}>{unitLabel}</Text>
           </View>
         </View>
-        <Text style={styles.goalText}>Goal: {safeGoal.toLocaleString()}</Text>
+        <Text style={styles.goalText}>Goal: {Number(displayGoal).toLocaleString()}</Text>
       </View>
     );
   };
+  
+  // Extract display string from converters for Top Pills
+  const calText = converters.displayEnergy(stats?.caloriesBurnedToday || 0);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -218,7 +246,7 @@ const SummaryScreen = () => {
             <Text style={styles.statPillText}>{stats?.workoutsCompletedToday || 0} workouts today</Text>
           </View>
           <View style={styles.statPill}>
-            <Text style={styles.statPillText}>{stats?.caloriesBurnedToday || 0} cal burned</Text>
+            <Text style={styles.statPillText}>{calText} burned</Text>
           </View>
         </View>
 
@@ -267,14 +295,13 @@ const SummaryScreen = () => {
         </View>
 
         <View style={styles.midRow}>
-          {/* UPDATED: STEPS CARD IS NOW TOUCHABLE */}
           <TouchableOpacity 
             style={styles.halfCardWrapper} 
             activeOpacity={0.7}
             onPress={() => navigation.navigate('History', { 
               metric: 'steps', 
               label: 'Steps', 
-              color: colors.danger, // Keep red for Steps
+              color: colors.danger, 
               unit: 'steps' 
             })}
           >
@@ -282,7 +309,15 @@ const SummaryScreen = () => {
           </TouchableOpacity>
           
           <TouchableOpacity style={styles.halfCardWrapper} onPress={addWater} activeOpacity={0.7}>
-             <CircularStats label="Hydration" icon="water" color="#0A84FF" value={stats?.hydrationCurrent || 0} goal={DAILY_WATER_GOAL} subLabel="ML" />
+             {/* Pass 'hydration' type to trigger conversion logic */}
+             <CircularStats 
+                label="Hydration" 
+                icon="water" 
+                color="#0A84FF" 
+                value={stats?.hydrationCurrent || 0} 
+                goal={stats?.hydrationGoal || 2500} 
+                type="hydration"
+             />
           </TouchableOpacity>
         </View>
 

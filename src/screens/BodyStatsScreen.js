@@ -1,12 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { 
-  View, Text, StyleSheet, TextInput, TouchableOpacity, 
-  SafeAreaView, Dimensions, KeyboardAvoidingView, Platform, ScrollView, Alert, useColorScheme 
+  View, Text, StyleSheet, TextInput, TouchableOpacity, Dimensions, KeyboardAvoidingView, Platform, ScrollView, Alert, useColorScheme 
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Path, Circle, Line, Defs, LinearGradient, Stop, Text as SvgText, G, Rect } from 'react-native-svg';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { PALETTE } from '../constants/theme';
 
 const { width } = Dimensions.get('window');
@@ -59,7 +59,15 @@ const BodyStatsScreen = () => {
   const styles = getStyles(theme, colors);
 
   const { userData, updateBodyStats } = useUser();
-  const { metric, label, unit, color } = route.params; 
+  const { metric, label, color } = route.params; 
+
+  // Get preferences
+  const units = userData.preferences?.units || { weight: 'kg', height: 'cm' };
+  
+  // Determine display unit
+  let displayUnit = '';
+  if (metric === 'weight') displayUnit = units.weight || 'kg';
+  if (metric === 'height') displayUnit = units.height || 'cm';
 
   const [newValue, setNewValue] = useState('');
   const [filter, setFilter] = useState('6M'); // W, M, 6M, Y
@@ -68,6 +76,22 @@ const BodyStatsScreen = () => {
 
   // Clear selection on filter change
   useEffect(() => setSelectedPoint(null), [filter]);
+
+  // --- CONVERSION HELPER ---
+  const convertValue = (val) => {
+    if (val === null || val === undefined) return 0;
+    if (metric === 'weight' && displayUnit === 'lbs') return val * 2.20462;
+    if (metric === 'height' && displayUnit === 'ft') return val / 30.48; // Store as decimal feet for chart
+    return val;
+  };
+
+  const reverseConvert = (val) => {
+    const num = parseFloat(val);
+    if (isNaN(num)) return null;
+    if (metric === 'weight' && displayUnit === 'lbs') return num / 2.20462;
+    if (metric === 'height' && displayUnit === 'ft') return num * 30.48;
+    return num;
+  };
 
   // --- 1. DATA PROCESSING ---
   const { graphPoints, stats, chartConfig } = useMemo(() => {
@@ -86,7 +110,8 @@ const BodyStatsScreen = () => {
     let rawData = history
       .filter(item => item.type === metric)
       .map(item => ({
-        value: Number(item.value),
+        // Apply conversion HERE so graph matches user preference
+        value: convertValue(Number(item.value)), 
         date: new Date(item.date),
         timestamp: new Date(item.date).getTime()
       }))
@@ -94,10 +119,9 @@ const BodyStatsScreen = () => {
       .sort((a, b) => a.timestamp - b.timestamp);
 
     // 3. Inject Current Value if needed (to ensure graph isn't empty)
-    const currentVal = metric === 'weight' ? userData.weight : userData.height;
-    if (currentVal && (rawData.length === 0 || rawData[rawData.length - 1].timestamp < now.getTime() - 86400000)) {
-       // If no data today, allow current stats to represent "now"
-       rawData.push({ value: Number(currentVal), date: now, timestamp: now.getTime(), isProjected: true });
+    const currentMetricVal = metric === 'weight' ? userData.weight : userData.height;
+    if (currentMetricVal && (rawData.length === 0 || rawData[rawData.length - 1].timestamp < now.getTime() - 86400000)) {
+       rawData.push({ value: convertValue(Number(currentMetricVal)), date: now, timestamp: now.getTime(), isProjected: true });
     }
 
     // 4. Calculate Min/Max for Y-Axis Scaling
@@ -105,18 +129,16 @@ const BodyStatsScreen = () => {
     let minVal = Math.min(...values);
     let maxVal = Math.max(...values);
     
-    // Add "breathing room" so line doesn't hit edges
+    // Add "breathing room"
     if (minVal === maxVal) { minVal -= 5; maxVal += 5; }
     else {
         const spread = maxVal - minVal;
-        minVal -= spread * 0.2; // 20% padding bottom
-        maxVal += spread * 0.1; // 10% padding top
+        minVal -= spread * 0.2; 
+        maxVal += spread * 0.1; 
     }
 
     // 5. Generate Graph Coordinates
     const points = rawData.map((d, i) => {
-        // Just distribute them evenly by index for smoother scrolling line
-        // (Alternatively we could map by exact time, but index is cleaner for UI)
         const x = (i * gap) + (gap / 2); 
         const y = CHART_HEIGHT - CHART_PADDING_BOTTOM - ((d.value - minVal) / (maxVal - minVal)) * (CHART_HEIGHT - CHART_PADDING_TOP - CHART_PADDING_BOTTOM);
         return { x, y, value: d.value, date: d.date, label: formatDateLabel(d.date, filter) };
@@ -126,19 +148,18 @@ const BodyStatsScreen = () => {
     const latest = points.length > 0 ? points[points.length - 1].value : 0;
     const start = points.length > 0 ? points[0].value : 0;
     const change = latest - start;
-    const best = metric === 'weight' ? Math.min(...values) : Math.max(...values); // Min weight is usually best, Max height best
+    const best = metric === 'weight' ? Math.min(...values) : Math.max(...values); 
 
     return {
         graphPoints: points,
         stats: { latest, change, best },
         chartConfig: { width: Math.max(AVAILABLE_WIDTH, points.length * gap), gap }
     };
-  }, [userData, metric, filter]);
+  }, [userData, metric, filter, displayUnit]); // Added displayUnit dependency
 
   // --- 2. PATH GENERATION ---
   const linePath = useMemo(() => {
     if (graphPoints.length === 0) return '';
-    // SVG Path Command: Move to first, Line to rest
     return graphPoints.map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ');
   }, [graphPoints]);
 
@@ -146,8 +167,13 @@ const BodyStatsScreen = () => {
   const handleUpdate = async () => {
     if (!newValue) return;
     setLoading(true);
-    let w = metric === 'weight' ? newValue : null;
-    let h = metric === 'height' ? newValue : null;
+    
+    // Convert User Input (Preferred Unit) -> Database Metric (KG/CM)
+    const metricVal = reverseConvert(newValue);
+    
+    let w = metric === 'weight' ? metricVal : null;
+    let h = metric === 'height' ? metricVal : null;
+    
     const res = await updateBodyStats(w, h);
     setLoading(false);
     if (res.success) {
@@ -165,6 +191,18 @@ const BodyStatsScreen = () => {
   const displayValue = selectedPoint ? selectedPoint.value : stats.latest;
   const displayDate = selectedPoint ? formatFullDate(selectedPoint.date) : "Current";
   const displayLabel = selectedPoint ? "Recorded on" : "Latest Reading";
+
+  // Formatter for display
+  const fmt = (val) => {
+     if (metric === 'height' && displayUnit === 'ft') {
+         // Decimal feet -> Feet'Inches
+         const totalInches = val * 12;
+         const f = Math.floor(totalInches / 12);
+         const i = Math.round(totalInches % 12);
+         return `${f}'${i}"`;
+     }
+     return val.toFixed(1);
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -195,7 +233,7 @@ const BodyStatsScreen = () => {
           <View style={styles.summaryBlock}>
             <Text style={styles.rangeLabel}>{displayLabel} <Text style={{fontWeight:'400'}}>{displayDate}</Text></Text>
             <Text style={[styles.averageBig, { color: colors.text }]}>
-              {displayValue} <Text style={styles.unitSmall}>{unit}</Text>
+              {fmt(displayValue)} <Text style={styles.unitSmall}>{displayUnit}</Text>
             </Text>
           </View>
 
@@ -232,10 +270,7 @@ const BodyStatsScreen = () => {
                   const isSelected = selectedPoint === p;
                   return (
                     <G key={i} onPress={() => handlePointPress(p)}>
-                      {/* Invisible larger touch target */}
                       <Rect x={p.x - 15} y={0} width={30} height={CHART_HEIGHT} fill="transparent" />
-                      
-                      {/* Visible Dot */}
                       <Circle 
                         cx={p.x} cy={p.y} 
                         r={isSelected ? 6 : 4} 
@@ -243,8 +278,6 @@ const BodyStatsScreen = () => {
                         stroke={color} 
                         strokeWidth={isSelected ? 3 : 2} 
                       />
-
-                      {/* X-Axis Label */}
                       {p.label && (i % 2 === 0 || filter !== 'Y') && (
                         <SvgText
                           x={p.x} y={CHART_HEIGHT - 5}
@@ -271,12 +304,12 @@ const BodyStatsScreen = () => {
                  <View>
                     <Text style={styles.cardLabel}>Total Change</Text>
                     <Text style={[styles.cardBody, { color: colors.text, marginTop: 4 }]}>
-                        {Math.abs(stats.change).toFixed(1)} {unit}
+                        {Math.abs(stats.change).toFixed(1)} {displayUnit}
                     </Text>
                  </View>
                  <View style={{alignItems: 'flex-end'}}>
                      <Text style={[styles.trendValue, { color: stats.change <= 0 ? (metric === 'weight' ? '#4CAF50' : '#FF3B30') : (metric === 'weight' ? '#FF3B30' : '#4CAF50') }]}>
-                        {stats.change > 0 ? '+' : ''}{stats.change}
+                        {stats.change > 0 ? '+' : ''}{stats.change.toFixed(1)}
                      </Text>
                      <Text style={styles.cardLabelSmall}>since start of period</Text>
                  </View>
@@ -292,7 +325,7 @@ const BodyStatsScreen = () => {
                     <Text style={[styles.cardHeaderTitle, { color }]}>Personal Best</Text>
                  </View>
                  <Text style={[styles.cardBody, { color: colors.text }]}>
-                   Your best recorded {label.toLowerCase()} in this period was <Text style={{fontWeight:'bold'}}>{stats.best} {unit}</Text>.
+                   Your best recorded {label.toLowerCase()} in this period was <Text style={{fontWeight:'bold'}}>{fmt(stats.best)} {displayUnit}</Text>.
                  </Text>
              </View>
           </View>
@@ -303,13 +336,13 @@ const BodyStatsScreen = () => {
             <View style={[styles.inputCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                <TextInput 
                   style={[styles.input, { color: colors.text }]}
-                  placeholder={`Enter new ${unit}...`}
+                  placeholder={`Enter new ${displayUnit} ${displayUnit === 'ft' ? '(e.g. 5.5)' : '...'}`}
                   placeholderTextColor={colors.textDim}
                   keyboardType="numeric"
                   value={newValue}
                   onChangeText={setNewValue}
                />
-               <Text style={styles.inputUnit}>{unit}</Text>
+               <Text style={styles.inputUnit}>{displayUnit}</Text>
                <TouchableOpacity 
                  style={[styles.addBtn, { backgroundColor: color }]} 
                  onPress={handleUpdate}

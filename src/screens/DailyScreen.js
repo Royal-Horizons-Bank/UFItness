@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
-  View, Text, StyleSheet, ScrollView, SafeAreaView, 
+  View, Text, StyleSheet, ScrollView,
   useColorScheme, TouchableOpacity, FlatList, RefreshControl, AppState, Modal, TextInput, Alert, Platform, ActionSheetIOS
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker'; 
 import * as Haptics from 'expo-haptics'; 

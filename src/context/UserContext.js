@@ -29,9 +29,9 @@ const INITIAL_USER_DATA = {
   lastActiveDate: new Date().toISOString().split('T')[0],
   isSetupComplete: false,
   
-  // Physical Stats
+  // Physical Stats (Always stored in Metric: Years, YYYY-MM-DD, Kg, Cm)
   age: null,
-  dob: null, // Date of Birth string (YYYY-MM-DD)
+  dob: null,
   weight: 0, 
   height: 0,
 
@@ -52,7 +52,7 @@ const INITIAL_USER_DATA = {
     steps: 0, 
     stepGoal: 10000, 
     hydrationCurrent: 0, 
-    hydrationGoal: 2500,
+    hydrationGoal: 2500, // Stored in ML
     weeklyGoalCurrent: 0, 
     weeklyGoalTarget: 5,
   },
@@ -60,7 +60,14 @@ const INITIAL_USER_DATA = {
   // App Preferences
   preferences: {
     isAutoSyncEnabled: false,
-    pushNotifications: true
+    pushNotifications: true,
+    // Units (Default Metric)
+    units: {
+      weight: 'kg',      // 'kg' | 'lbs'
+      height: 'cm',      // 'cm' | 'ft'
+      volume: 'ml',      // 'ml' | 'oz' | 'glasses'
+      energy: 'kcal'     // 'kcal' | 'kJ'
+    }
   },
 };
 
@@ -74,8 +81,12 @@ export const UserProvider = ({ children }) => {
   
   const appState = useRef(AppState.currentState);
 
+  // --- PEDOMETER REFS (Fix for Android resetting steps) ---
+  const sessionStartSteps = useRef(0); // Snapshots DB steps when app opens/logins
+  const currentSessionSteps = useRef(0); // Tracks live steps from sensor in this session
+
   // ============================================================
-  // 1. HELPER FUNCTIONS
+  // 1. HELPER FUNCTIONS & CONVERTERS
   // ============================================================
 
   const getLocalDateString = (dateInput) => {
@@ -99,6 +110,77 @@ export const UserProvider = ({ children }) => {
     return mins === 0 ? `${hours}h` : `${hours}h ${mins}m`;
   };
 
+  // --- NEW: CENTRALIZED UNIT LOGIC ---
+  const getUnitConfig = (type) => {
+    const prefs = userData?.preferences?.units || {};
+    
+    switch (type) {
+      case 'weight':
+        return prefs.weight === 'lbs' 
+          ? { multiplier: 2.20462, unit: 'lbs', decimals: 0 }
+          : { multiplier: 1, unit: 'kg', decimals: 0 };
+          
+      case 'height':
+        return prefs.height === 'ft'
+          ? { multiplier: 0.393701, unit: 'in', decimals: 1 } 
+          : { multiplier: 1, unit: 'cm', decimals: 0 };
+
+      case 'hydration':
+      case 'volume':
+        if (prefs.volume === 'oz') return { multiplier: 0.033814, unit: 'oz', decimals: 0 };
+        if (prefs.volume === 'glasses') return { multiplier: 1/240, unit: 'glasses', decimals: 1 };
+        return { multiplier: 1, unit: 'ml', decimals: 0 };
+
+      case 'energy':
+      case 'calories':
+        return prefs.energy === 'kJ'
+          ? { multiplier: 4.184, unit: 'kJ', decimals: 0 }
+          : { multiplier: 1, unit: 'kcal', decimals: 0 };
+
+      case 'steps':
+      default:
+        return { multiplier: 1, unit: '', decimals: 0 };
+    }
+  };
+
+  // --- UNIT CONVERTERS (For UI Display) ---
+  const converters = {
+    getUnitConfig, // Expose for use in screens (History/Summary)
+
+    // Weight (Stored in KG)
+    displayWeight: (kgVal) => {
+      const { multiplier, unit } = getUnitConfig('weight');
+      if (!kgVal) return '--';
+      return `${Math.round(kgVal * multiplier)} ${unit}`;
+    },
+    // Height (Stored in CM)
+    displayHeight: (cmVal) => {
+      const unit = userData?.preferences?.units?.height || 'cm';
+      if (!cmVal) return '--';
+      // Keep special formatting for Feet/Inches text string
+      if (unit === 'ft') {
+        const totalInches = cmVal / 2.54;
+        const feet = Math.floor(totalInches / 12);
+        const inches = Math.round(totalInches % 12);
+        return `${feet}'${inches}"`;
+      }
+      return `${cmVal} cm`;
+    },
+    // Volume (Stored in ML)
+    displayVolume: (mlVal) => {
+      const { multiplier, unit, decimals } = getUnitConfig('hydration');
+      if (!mlVal && mlVal !== 0) return '--';
+      const val = mlVal * multiplier;
+      return `${decimals === 0 ? Math.round(val) : val.toFixed(decimals).replace(/\.0$/, '')} ${unit}`;
+    },
+    // Energy (Stored in Kcal)
+    displayEnergy: (kcalVal) => {
+      const { multiplier, unit } = getUnitConfig('energy');
+      if (!kcalVal && kcalVal !== 0) return '--';
+      return `${Math.round(kcalVal * multiplier)} ${unit}`;
+    }
+  };
+
   // ============================================================
   // 2. HISTORY ARCHIVER (End of Day Logic)
   // ============================================================
@@ -109,13 +191,13 @@ export const UserProvider = ({ children }) => {
     const todayStr = new Date().toISOString().split('T')[0];
     const lastActive = data.lastActiveDate || todayStr;
 
-    // If it's a new day (Current Date != Last Active Date stored in DB)
+    // If it's a new day
     if (lastActive !== todayStr) {
       try {
         const userRef = doc(db, 'users', uid);
         const historyEntries = [];
 
-        // Archive Steps (Since they are just a daily counter, we save them manually)
+        // Archive Steps
         if (data.stats && data.stats.steps > 0) {
           historyEntries.push({
             type: 'steps',
@@ -124,10 +206,9 @@ export const UserProvider = ({ children }) => {
           });
         }
 
-        // Prepare Updates
         const updates = { lastActiveDate: todayStr };
-        updates['stats.steps'] = 0; // Reset daily steps
-        updates['stats.hydrationCurrent'] = 0; // Reset daily hydration
+        updates['stats.steps'] = 0; 
+        updates['stats.hydrationCurrent'] = 0; 
         updates['stats.caloriesBurnedToday'] = 0;
         updates['stats.workoutsCompletedToday'] = 0;
 
@@ -136,8 +217,10 @@ export const UserProvider = ({ children }) => {
         }
 
         await updateDoc(userRef, updates);
-        console.log("Daily stats archived successfully for:", lastActive);
-
+        
+        // Reset local step counters for the new day
+        sessionStartSteps.current = 0;
+        currentSessionSteps.current = 0;
       } catch (error) {
         console.error("Failed to migrate daily stats:", error);
       }
@@ -161,15 +244,7 @@ export const UserProvider = ({ children }) => {
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const uid = userCredential.user.uid;
-      
-      // Initialize with Setup Flag = False
-      const newUserData = { 
-        ...INITIAL_USER_DATA, 
-        email: email, 
-        createdAt: new Date().toISOString(),
-        isSetupComplete: false 
-      };
-
+      const newUserData = { ...INITIAL_USER_DATA, email: email, createdAt: new Date().toISOString(), isSetupComplete: false };
       await setDoc(doc(db, 'users', uid), newUserData);
       setUserData(newUserData); 
       return { success: true };
@@ -183,7 +258,6 @@ export const UserProvider = ({ children }) => {
       const credential = GoogleAuthProvider.credential(idToken);
       const result = await signInWithCredential(auth, credential);
       
-      // Check if new user
       const userRef = doc(db, 'users', result.user.uid);
       const docSnap = await getDoc(userRef);
       
@@ -203,17 +277,26 @@ export const UserProvider = ({ children }) => {
     } catch (error) { return { success: false, error: error.message }; }
   };
 
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setUserData(INITIAL_USER_DATA);
+      sessionStartSteps.current = 0;
+      currentSessionSteps.current = 0;
+      return { success: true };
+    } catch (error) { 
+      return { success: false, error: error.message }; 
+    }
+  };
+
   const completeSetup = async (setupData) => {
     if (!user) return;
     try {
       const now = new Date().toISOString();
       const historyEntries = [];
-      
-      // Push initial measurements to history so graph isn't empty
       if (setupData.weight) historyEntries.push({ type: 'weight', value: parseInt(setupData.weight), date: now });
       if (setupData.height) historyEntries.push({ type: 'height', value: parseInt(setupData.height), date: now });
 
-      // Save all setup data to Firestore
       const updates = {
         name: setupData.name,
         age: setupData.age,
@@ -230,8 +313,6 @@ export const UserProvider = ({ children }) => {
       }
       
       await updateDoc(doc(db, 'users', user.uid), updates);
-      
-      // Optimistic Update
       setUserData(prev => ({ 
         ...prev, 
         ...updates, 
@@ -240,16 +321,6 @@ export const UserProvider = ({ children }) => {
       }));
     } catch (e) { 
       console.error("Setup Error:", e); 
-    }
-  };
-
-  const logout = async () => {
-    try {
-      await signOut(auth);
-      setUserData(INITIAL_USER_DATA);
-      return { success: true };
-    } catch (error) { 
-      return { success: false, error: error.message }; 
     }
   };
 
@@ -275,7 +346,9 @@ export const UserProvider = ({ children }) => {
       await updateDoc(doc(db, 'users', user.uid), { dob: dobString, age: age });
       setUserData(prev => ({ ...prev, dob: dobString, age: age }));
       return { success: true };
-    } catch (e) { return { success: false, error: e.message }; }
+    } catch (e) { 
+      return { success: false, error: e.message }; 
+    }
   };
 
   const updateBodyStats = async (newWeight, newHeight) => {
@@ -285,6 +358,7 @@ export const UserProvider = ({ children }) => {
       const updates = {};
       const historyEntries = [];
 
+      // Always save as Metric (int) to DB
       if (newWeight) {
         const val = parseInt(newWeight);
         updates.weight = val;
@@ -342,7 +416,15 @@ export const UserProvider = ({ children }) => {
 
   const updatePreferences = async (newPrefs) => {
     if (!user) return;
-    const updated = { ...userData.preferences, ...newPrefs };
+    const currentUnits = userData.preferences?.units || INITIAL_USER_DATA.preferences.units;
+    const incomingUnits = newPrefs.units || {};
+    
+    const updated = { 
+      ...userData.preferences, 
+      ...newPrefs, 
+      units: { ...currentUnits, ...incomingUnits }
+    };
+
     setUserData(prev => ({ ...prev, preferences: updated })); 
     await updateDoc(doc(db, 'users', user.uid), { preferences: updated });
   };
@@ -358,7 +440,7 @@ export const UserProvider = ({ children }) => {
   };
 
   // ============================================================
-  // 5. LEADERBOARD
+  // 5. DATA & SYNC
   // ============================================================
 
   const fetchLeaderboard = async () => {
@@ -383,10 +465,7 @@ export const UserProvider = ({ children }) => {
     }
   };
 
-  // ============================================================
-  // 6. EVENTS & CALENDAR (Smart Scheduling)
-  // ============================================================
-
+  // --- CALENDAR & SMART GAPS ---
   const findSmartGaps = (busyEvents, startDate, daysToScan = 365) => {
     const gaps = [];
     const minGapMinutes = 20;
@@ -394,7 +473,6 @@ export const UserProvider = ({ children }) => {
     const createGap = (startMs, endMs, dateKey, label) => {
       const diffMins = Math.floor((endMs - startMs) / 60000);
       let gapType = 'Bronze'; let suggestion = 'Free Time'; let color = '#FFCC00'; 
-      
       if (diffMins >= 120) { gapType = 'Diamond'; suggestion = '⚡ FREE DAY: Long Workout'; color = '#0A84FF'; } 
       else if (diffMins >= 45) { gapType = 'Gold'; suggestion = '⚡ BEST TIME: Full Workout'; color = '#34C759'; } 
       else if (diffMins >= 20) { gapType = 'Silver'; suggestion = '🔥 Great for HIIT / Micro'; color = '#FF3B30'; }
@@ -404,18 +482,12 @@ export const UserProvider = ({ children }) => {
       
       return {
         id: `gap_${dateKey}_${startMs}_${Date.now()}`, 
-        dateString: dateKey, 
-        day: new Date(startMs).getDate().toString(),
+        dateString: dateKey, day: new Date(startMs).getDate().toString(),
         title: label || 'Fitness Opportunity', 
         startTime: startObj.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
         endTime: endObj.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), 
-        rawStart: startMs, 
-        rawEnd: endMs, 
-        type: 'gap',
-        gapQuality: gapType, 
-        duration: formatDuration(diffMins), 
-        suggestion: suggestion, 
-        color: color
+        rawStart: startMs, rawEnd: endMs, type: 'gap',
+        gapQuality: gapType, duration: formatDuration(diffMins), suggestion: suggestion, color: color
       };
     };
 
@@ -438,22 +510,16 @@ export const UserProvider = ({ children }) => {
       }
       
       const dayEvents = eventsByDate[dateKey].sort((a, b) => a.rawStart - b.rawStart);
-      
-      // Gap at start of day
       const dayStart = new Date(dayEvents[0].rawStart); dayStart.setHours(7, 0, 0, 0); 
       if (dayEvents[0].rawStart > dayStart.getTime()) {
         const diff = Math.floor((dayEvents[0].rawStart - dayStart.getTime()) / 60000);
         if (diff >= minGapMinutes) gaps.push(createGap(dayStart.getTime(), dayEvents[0].rawStart, dateKey, "Morning Workout"));
       }
-      
-      // Gaps between events
       for (let j = 0; j < dayEvents.length - 1; j++) {
         const currentEnd = dayEvents[j].rawEnd; const nextStart = dayEvents[j+1].rawStart;
         const diff = Math.floor((nextStart - currentEnd) / 60000);
         if (diff >= minGapMinutes) gaps.push(createGap(currentEnd, nextStart, dateKey));
       }
-      
-      // Gap at end of day
       const dayEnd = new Date(dayEvents[0].rawStart); dayEnd.setHours(22, 0, 0, 0);
       const lastEventEnd = dayEvents[dayEvents.length - 1].rawEnd;
       if (lastEventEnd < dayEnd.getTime()) {
@@ -462,6 +528,58 @@ export const UserProvider = ({ children }) => {
       }
     }
     return gaps;
+  };
+
+  const syncDefaultCalendar = async () => {
+    if (!user) return false;
+    try {
+      let busyEvents = [];
+      const { status } = await Calendar.requestCalendarPermissionsAsync();
+      if (status === 'granted') {
+        const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+        const calendarIds = calendars.map(c => c.id);
+        const start = new Date(); start.setHours(0,0,0,0);
+        const end = new Date(); end.setDate(end.getDate() + 365); end.setHours(23,59,59,999);
+        const events = await Calendar.getEventsAsync(calendarIds, start, end);
+        
+        const deviceEvents = events.filter(e => {
+            const note = e.notes || e.description || ''; return !note.includes('Added via UFitness Schedule');
+          }).map((e, i) => {
+            const s = new Date(e.startDate); const en = new Date(e.endDate); const durMins = Math.round((en - s) / 60000);
+            return {
+              id: `local_${i}_${e.id}`, dateString: getLocalDateString(s), day: s.getDate().toString(),
+              title: e.title || 'Event', rawStart: s.getTime(), rawEnd: en.getTime(),
+              startTime: s.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+              endTime: en.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+              type: 'class', duration: formatDuration(durMins), color: e.calendarColor || '#555' 
+            };
+          });
+        busyEvents = [...busyEvents, ...deviceEvents];
+      }
+      
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      if (userDoc.exists()) {
+        const customData = userDoc.data().customEvents || [];
+        const formattedCustom = customData.map(c => {
+          const s = new Date(c.rawStart); const e = new Date(c.rawEnd);
+          return {
+            id: c.id, dateString: c.dateString, day: s.getDate().toString(), title: c.title,
+            rawStart: c.rawStart, rawEnd: c.rawEnd,
+            startTime: s.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+            endTime: e.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+            type: 'custom', duration: formatDuration(c.duration), color: '#FF9500' 
+          };
+        });
+        busyEvents = [...busyEvents, ...formattedCustom];
+      }
+      
+      const start = new Date(); start.setHours(0,0,0,0);
+      const gaps = findSmartGaps(busyEvents, start, 365);
+      const fullSchedule = [...busyEvents, ...gaps].sort((a, b) => a.rawStart - b.rawStart);
+      
+      await updateDoc(doc(db, 'users', user.uid), { schedule: fullSchedule });
+      return true;
+    } catch (e) { console.log(e); return false; }
   };
 
   const addCustomEvent = async (title, dateIsoString, timeString, durationMins) => {
@@ -522,60 +640,8 @@ export const UserProvider = ({ children }) => {
     } catch (e) { return { success: false, error: e.message }; }
   };
 
-  const syncDefaultCalendar = async () => {
-    if (!user) return false;
-    try {
-      let busyEvents = [];
-      const { status } = await Calendar.requestCalendarPermissionsAsync();
-      if (status === 'granted') {
-        const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
-        const calendarIds = calendars.map(c => c.id);
-        const start = new Date(); start.setHours(0,0,0,0);
-        const end = new Date(); end.setDate(end.getDate() + 365); end.setHours(23,59,59,999);
-        const events = await Calendar.getEventsAsync(calendarIds, start, end);
-        
-        const deviceEvents = events.filter(e => {
-            const note = e.notes || e.description || ''; return !note.includes('Added via UFitness Schedule');
-          }).map((e, i) => {
-            const s = new Date(e.startDate); const en = new Date(e.endDate); const durMins = Math.round((en - s) / 60000);
-            return {
-              id: `local_${i}_${e.id}`, dateString: getLocalDateString(s), day: s.getDate().toString(),
-              title: e.title || 'Event', rawStart: s.getTime(), rawEnd: en.getTime(),
-              startTime: s.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
-              endTime: en.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
-              type: 'class', duration: formatDuration(durMins), color: e.calendarColor || '#555' 
-            };
-          });
-        busyEvents = [...busyEvents, ...deviceEvents];
-      }
-      
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      if (userDoc.exists()) {
-        const customData = userDoc.data().customEvents || [];
-        const formattedCustom = customData.map(c => {
-          const s = new Date(c.rawStart); const e = new Date(c.rawEnd);
-          return {
-            id: c.id, dateString: c.dateString, day: s.getDate().toString(), title: c.title,
-            rawStart: c.rawStart, rawEnd: c.rawEnd,
-            startTime: s.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
-            endTime: e.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
-            type: 'custom', duration: formatDuration(c.duration), color: '#FF9500' 
-          };
-        });
-        busyEvents = [...busyEvents, ...formattedCustom];
-      }
-      
-      const start = new Date(); start.setHours(0,0,0,0);
-      const gaps = findSmartGaps(busyEvents, start, 365);
-      const fullSchedule = [...busyEvents, ...gaps].sort((a, b) => a.rawStart - b.rawStart);
-      
-      await updateDoc(doc(db, 'users', user.uid), { schedule: fullSchedule });
-      return true;
-    } catch (e) { console.log(e); return false; }
-  };
-
   // ============================================================
-  // 7. STATS & PEDOMETER LOGIC
+  // 7. STATS & PEDOMETER LOGIC (Fixed for Android)
   // ============================================================
 
   const calculateStats = (history = [], currentStats) => {
@@ -650,37 +716,68 @@ export const UserProvider = ({ children }) => {
     };
   };
 
+  // --- UPDATED REFRESH LOGIC ---
   const refreshData = async () => {
     try {
       const isAvailable = await Pedometer.isAvailableAsync();
-      if (!isAvailable) return;
+      if (!isAvailable) {
+        console.log("Pedometer not available on this device");
+        return;
+      }
 
+      // iOS: We can fetch history for the whole day accurately
       if (Platform.OS === 'ios') {
         const start = new Date(); start.setHours(0,0,0,0);
-        const result = await Pedometer.getStepCountAsync(start, new Date());
-        setUserData(prev => ({ ...prev, stats: { ...prev.stats, steps: result.steps } }));
-        if (user) await updateDoc(doc(db, 'users', user.uid), { "stats.steps": result.steps });
+        const end = new Date();
+        const result = await Pedometer.getStepCountAsync(start, end);
+        
+        // Sync iOS result directly to state and DB (it's authoritative)
+        const newSteps = result.steps;
+        setUserData(prev => ({ ...prev, stats: { ...prev.stats, steps: newSteps } }));
+        
+        // Update our refs to match
+        sessionStartSteps.current = newSteps; 
+        currentSessionSteps.current = 0;
+        
+        if (user) await updateDoc(doc(db, 'users', user.uid), { "stats.steps": newSteps });
       }
+      
+      // Android: Steps are handled by the listener in startPedometer below,
+      // because getStepCountAsync (history) is often not supported.
       
       if (userData?.preferences?.isAutoSyncEnabled) await syncDefaultCalendar();
     } catch (e) { console.log("Refresh Data Error:", e); }
   };
 
+  // --- UPDATED TRACKER LOGIC (ANDROID FRIENDLY) ---
   const startPedometer = async () => {
     try {
       const { status } = await Pedometer.requestPermissionsAsync();
-      if (status === 'granted') {
-        await refreshData();
-        if (pedometerSubscription) pedometerSubscription.remove();
-        const sub = Pedometer.watchStepCount((result) => {
-          if (Platform.OS === 'android') {
-             setUserData(prev => ({ ...prev, stats: { ...prev.stats, steps: result.steps } }));
-          } else {
-             refreshData();
-          }
-        });
-        setPedometerSubscription(sub);
+      if (status !== 'granted') {
+        console.warn("Pedometer permission denied by user (or missing in app.json)");
+        return;
       }
+
+      
+      sessionStartSteps.current = userData?.stats?.steps || 0;
+
+     
+      if (pedometerSubscription) pedometerSubscription.remove();
+
+      
+      const sub = Pedometer.watchStepCount((result) => {
+      
+        currentSessionSteps.current = result.steps;
+        
+        const totalSteps = sessionStartSteps.current + currentSessionSteps.current;
+
+        setUserData(prev => ({ 
+          ...prev, 
+          stats: { ...prev.stats, steps: totalSteps } 
+        }));
+      });
+
+      setPedometerSubscription(sub);
     } catch (e) { console.log("Pedometer Permission Error:", e); }
   };
 
@@ -735,13 +832,16 @@ export const UserProvider = ({ children }) => {
     };
     setUserData(prev => ({ ...prev, ...resetState }));
     await updateDoc(doc(db, 'users', user.uid), resetState); 
+    
+    sessionStartSteps.current = 0;
+    currentSessionSteps.current = 0;
   };
 
   // ============================================================
   // 8. EFFECTS & LISTENERS
   // ============================================================
 
-  
+  // Calendar Auto-Sync Effect
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
       if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
@@ -755,6 +855,27 @@ export const UserProvider = ({ children }) => {
     return () => { subscription.remove(); clearInterval(intervalId); };
   }, [user, userData?.preferences?.isAutoSyncEnabled]);
 
+  // NEW: Debounced Step Saver (Prevents Database Spamming)
+  useEffect(() => {
+    if (!user) return;
+
+    const saveInterval = setInterval(async () => {
+      const totalSteps = sessionStartSteps.current + currentSessionSteps.current;
+      
+     
+      if (totalSteps > sessionStartSteps.current) {
+         try {
+           await updateDoc(doc(db, 'users', user.uid), { "stats.steps": totalSteps });
+          
+           sessionStartSteps.current = totalSteps;
+           currentSessionSteps.current = 0; 
+         } catch(e) { console.error("Step Auto-Save Error", e); }
+      }
+    }, 10000); // Check every 10 seconds
+
+    return () => clearInterval(saveInterval);
+  }, [user]);
+
   // Auth State & Real-time Database Listener
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
@@ -765,13 +886,22 @@ export const UserProvider = ({ children }) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
             
-           
+            // Check if we need to archive yesterday's steps/stats
             checkAndMigrateDailyStats(currentUser.uid, data);
             
+            // Initialize the Android "Base" with what we found in the database
+            // This ensures we don't start from 0 if steps already exist
+            if (sessionStartSteps.current === 0 && (data.stats?.steps || 0) > 0) {
+              sessionStartSteps.current = data.stats.steps;
+            }
+
+            // Merge defaults for new fields (units, etc.)
+            const prefs = { ...INITIAL_USER_DATA.preferences, ...(data.preferences || {}) };
+            
             const safeStats = calculateStats(data.history, data.stats || INITIAL_USER_DATA.stats);
-            setUserData({ ...data, stats: safeStats, preferences: data.preferences || INITIAL_USER_DATA.preferences });
+            setUserData({ ...data, stats: safeStats, preferences: prefs });
           } else {
-           
+            // New user in Auth but no DB doc yet
             setDoc(doc(db, 'users', currentUser.uid), INITIAL_USER_DATA);
             setUserData(INITIAL_USER_DATA);
           }
@@ -825,6 +955,9 @@ export const UserProvider = ({ children }) => {
       addWater, 
       updateSteps,
       resetProgress,
+
+      // Helpers
+      converters // Contains getUnitConfig & display helpers
     }}>
       {children}
     </UserContext.Provider>

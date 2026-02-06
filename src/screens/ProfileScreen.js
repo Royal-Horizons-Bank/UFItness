@@ -83,7 +83,7 @@ const ProfileScreen = () => {
   const styles = getStyles(theme, colors);
   const navigation = useNavigation();
   
-  const { userData, uploadProfileImage, refreshData } = useUser();
+  const { userData, uploadProfileImage, refreshData, converters } = useUser();
   const { 
     name = 'Student', email = '', stats, profileImage, createdAt,
     weight, height, age 
@@ -117,6 +117,18 @@ const ProfileScreen = () => {
     }
   };
 
+  // --- Display Helpers to split Value and Unit ---
+  const parseDisplay = (str) => {
+    if (!str || str === '--') return { val: '--', unit: '' };
+    // Splits "70 kg" into ["70", "kg"] or "5'10"" into ["5'10"", ""]
+    const parts = str.match(/^([\d\.\,\'\"]+)\s*(.*)$/); 
+    if (parts) return { val: parts[1], unit: parts[2] };
+    return { val: str, unit: '' };
+  };
+
+  const wData = parseDisplay(converters.displayWeight(weight));
+  const hData = parseDisplay(converters.displayHeight(height));
+  
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView 
@@ -223,18 +235,18 @@ const ProfileScreen = () => {
           <View style={styles.bodyRow}>
             <BodyCard 
               label="Current Weight" 
-              value={weight || '--'} unit="kg"
+              value={wData.val} unit={wData.unit}
               icon="scale-bathroom" color="#30D158" 
               colors={colors} styles={styles}
-              onPress={() => navigation.navigate('BodyStats', { metric: 'weight', label: 'Weight History', unit: 'kg', color: '#30D158' })}
+              onPress={() => navigation.navigate('BodyStats', { metric: 'weight', label: 'Weight History', color: '#30D158' })}
             />
             <View style={{width: 12}} />
             <BodyCard 
               label="Current Height" 
-              value={height || '--'} unit="cm"
+              value={hData.val} unit={hData.unit}
               icon="human-male-height" color="#BF5AF2" 
               colors={colors} styles={styles}
-              onPress={() => navigation.navigate('BodyStats', { metric: 'height', label: 'Height History', unit: 'cm', color: '#BF5AF2' })}
+              onPress={() => navigation.navigate('BodyStats', { metric: 'height', label: 'Height History', color: '#BF5AF2' })}
             />
           </View>
         </View>
@@ -259,10 +271,10 @@ const ProfileScreen = () => {
             />
             <QuickStat 
               label="Calories Burned" 
-              value={(stats?.caloriesBurnedTotal || 0).toLocaleString()} 
+              value={converters.displayEnergy(stats?.caloriesBurnedTotal || 0)} 
               icon="fire" color="#FF9500" library="MaterialCommunityIcons"
               colors={colors} styles={styles}
-              onPress={() => navigation.navigate('History', { metric: 'calories', label: 'Active Energy', color: '#FF9500', unit: 'kcal' })}
+              onPress={() => navigation.navigate('History', { metric: 'calories', label: 'Active Energy', color: '#FF9500' })}
             />
             <QuickStat 
               label="Active Minutes" 
@@ -273,10 +285,10 @@ const ProfileScreen = () => {
             />
             <QuickStat 
               label="Hydration" 
-              value={`${(stats?.hydrationCurrent || 0).toLocaleString()} ml`} 
+              value={converters.displayVolume(stats?.hydrationCurrent || 0)} 
               icon="water" color="#0A84FF" library="MaterialCommunityIcons"
               colors={colors} styles={styles}
-              onPress={() => navigation.navigate('History', { metric: 'hydration', label: 'Hydration', color: '#0A84FF', unit: 'ml' })}
+              onPress={() => navigation.navigate('History', { metric: 'hydration', label: 'Hydration', color: '#0A84FF' })}
             />
           </View>
         </View>
@@ -326,7 +338,7 @@ const getStyles = (theme, colors) => StyleSheet.create({
   streakCard: { flex: 1, flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 18, paddingVertical: 16 },
   streakIcon: { padding: 8, borderRadius: 10 },
   streakNum: { fontSize: 18, fontWeight: '800' },
-  streakTxt: { fontSize: 11, color: colors.textDim, fontWeight: '600', textTransform: 'uppercase' },
+  streakTxt: { fontSize: 11, color: colors.textDim, fontWeight: '600' },
 
   // SECTIONS
   sectionContainer: { marginBottom: 30 },

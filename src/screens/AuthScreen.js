@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { 
   View, Text, StyleSheet, TextInput, TouchableOpacity, 
   KeyboardAvoidingView, Platform, ActivityIndicator, 
-  useColorScheme, LayoutAnimation, UIManager, SafeAreaView,
+  useColorScheme, LayoutAnimation, UIManager,
   Image, Alert 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useUser } from '../context/UserContext';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri } from 'expo-auth-session';

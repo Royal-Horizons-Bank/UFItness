@@ -1,11 +1,11 @@
 import React, { useState, useRef } from 'react';
 import { 
-  View, Text, StyleSheet, TextInput, TouchableOpacity, 
-  SafeAreaView, KeyboardAvoidingView, Platform, ScrollView, Alert, 
+  View, Text, StyleSheet, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, ScrollView, Alert, 
   useColorScheme, StatusBar, Dimensions, Keyboard 
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useUser } from '../context/UserContext';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { PALETTE } from '../constants/theme';
 
 const { width } = Dimensions.get('window');

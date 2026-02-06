@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { 
-  View, Text, StyleSheet, ScrollView, SafeAreaView, 
+  View, Text, StyleSheet, ScrollView,
   TouchableOpacity, Image, useColorScheme, Modal, TextInput, 
   TouchableWithoutFeedback, Keyboard, RefreshControl 
 } from 'react-native';
@@ -8,6 +8,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { PALETTE } from '../constants/theme';
 import { useUser } from '../context/UserContext';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const CATEGORIES = ["All", "Micro", "HIIT", "Strength", "Cardio", "Flexibility"];
 

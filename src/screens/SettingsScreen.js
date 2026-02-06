@@ -1,30 +1,60 @@
 import React, { useState } from 'react';
 import { 
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Switch, 
-  useColorScheme, Modal, FlatList, Image, ScrollView, TextInput, Alert 
+  View, Text, StyleSheet, TouchableOpacity, Switch, 
+  useColorScheme, Modal, FlatList, TextInput, ScrollView, Alert, Platform
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useUser } from '../context/UserContext';
 import { PALETTE } from '../constants/theme';
 import { useNavigation } from '@react-navigation/native';
 
-// --- HEALTH GOAL OPTIONS ---
-const STEP_OPTIONS = [
-  { label: 'Sedentary', value: 3000 },
-  { label: 'Light Active', value: 5000 },
-  { label: 'Moderate', value: 7500 },
-  { label: 'Active', value: 10000 },
-  { label: 'Very Active', value: 12500 },
-  { label: 'Athlete', value: 20000 },
+// --- CONSTANTS ---
+const STEP_OPTIONS = [ 
+  { label: 'Sedentary', value: 3000 }, 
+  { label: 'Light Active', value: 5000 }, 
+  { label: 'Moderate', value: 7500 }, 
+  { label: 'Active', value: 10000 }, 
+  { label: 'Very Active', value: 12500 }, 
+  { label: 'Athlete', value: 20000 } 
 ];
 
-const WATER_OPTIONS = [
-  { label: 'Minimum', value: 1500 },
-  { label: 'Standard', value: 2000 },
-  { label: 'Recommended', value: 2500 },
-  { label: 'High Active', value: 3000 },
-  { label: 'Gallon Mode', value: 4000 },
+const WATER_OPTIONS = [ 
+  { label: 'Minimum', value: 1500 }, 
+  { label: 'Standard', value: 2000 }, 
+  { label: 'Recommended', value: 2500 }, 
+  { label: 'High Active', value: 3000 }, 
+  { label: 'Gallon Mode', value: 4000 } 
 ];
+
+const UNIT_OPTIONS = {
+  weight: [ { label: 'Kilograms (kg)', value: 'kg' }, { label: 'Pounds (lbs)', value: 'lbs' } ],
+  height: [ { label: 'Centimeters (cm)', value: 'cm' }, { label: 'Feet & Inches (ft)', value: 'ft' } ],
+  volume: [ { label: 'Milliliters (ml)', value: 'ml' }, { label: 'Ounces (oz)', value: 'oz' }, { label: 'Glasses (240ml)', value: 'glasses' } ],
+  energy: [ { label: 'Calories (kcal)', value: 'kcal' }, { label: 'Kilojoules (kJ)', value: 'kJ' } ]
+};
+
+// --- COMPONENTS ---
+const SettingRow = ({ icon, color, label, value, onPress, isLast, showChevron = true, theme, colors, styles }) => (
+  <TouchableOpacity 
+    style={[styles.row, !isLast && { borderBottomWidth: 1, borderBottomColor: colors.border }]} 
+    onPress={onPress}
+    activeOpacity={0.7}
+  >
+    <View style={[styles.iconContainer, { backgroundColor: color + '15' }]}>
+      <Ionicons name={icon} size={20} color={color} />
+    </View>
+    <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
+    <View style={styles.rowRight}>
+      {value && <Text style={styles.rowValue}>{value}</Text>}
+      {showChevron && <Ionicons name="chevron-forward" size={16} color={colors.textDim} style={{marginLeft: 4}} />}
+    </View>
+  </TouchableOpacity>
+);
+
+const SectionHeader = ({ title, colors, styles }) => (
+  <Text style={[styles.sectionHeader, { color: colors.textDim }]}>{title}</Text>
+);
 
 const SettingsScreen = () => {
   const navigation = useNavigation();
@@ -33,12 +63,13 @@ const SettingsScreen = () => {
   const styles = getStyles(theme, colors);
   
   const { 
-    userData, logout, syncDefaultCalendar, updateDailyGoals, updatePreferences, 
-    updateName, updateUserPassword, resetProgress, updateDOB // <--- IMPORT updateDOB
+    userData, logout, syncDefaultCalendar, updateDailyGoals, 
+    updatePreferences, updateName, updateUserPassword, resetProgress, updateDOB,
+    converters // <--- IMPORTED FOR UNIT CONVERSION
   } = useUser();
   
-  const { name, email, stats, profileImage, preferences, dob } = userData || {};
-  const isSignedIn = !!userData?.email; 
+  const { name, dob, stats, preferences } = userData || {};
+  const units = preferences?.units || { weight: 'kg', height: 'cm', volume: 'ml', energy: 'kcal' };
 
   // --- STATE ---
   const [modalVisible, setModalVisible] = useState(false);
@@ -46,296 +77,299 @@ const SettingsScreen = () => {
   
   // Input State
   const [textInput, setTextInput] = useState('');
-  const [confirmInput, setConfirmInput] = useState(''); 
-  const [currentPassInput, setCurrentPassInput] = useState('');
-
-  // DOB Input State
   const [dobMonth, setDobMonth] = useState('');
   const [dobDay, setDobDay] = useState('');
   const [dobYear, setDobYear] = useState('');
+  const [currentPass, setCurrentPass] = useState('');
+  const [newPass, setNewPass] = useState('');
 
-  // Toggles
-  const [isGoogleSync, setIsGoogleSync] = useState(false);
-
-  // --- HANDLERS ---
-  const handleDeviceToggle = async (value) => {
-    if (value) {
-      const success = await syncDefaultCalendar();
-      updatePreferences({ isAutoSyncEnabled: success });
-    } else {
-      updatePreferences({ isAutoSyncEnabled: false });
+  // --- ACTIONS ---
+  const handleDeviceToggle = async (val) => {
+    if (val) { 
+      const success = await syncDefaultCalendar(); 
+      updatePreferences({ isAutoSyncEnabled: success }); 
+    } else { 
+      updatePreferences({ isAutoSyncEnabled: false }); 
     }
   };
 
   const openModal = (type) => {
     setEditType(type);
     setTextInput('');
-    setConfirmInput(''); 
-    setCurrentPassInput('');
+    setCurrentPass('');
+    setNewPass('');
     
     if (type === 'dob' && dob) {
-      const parts = dob.split('-'); // YYYY-MM-DD
-      if (parts.length === 3) {
-        setDobYear(parts[0]);
-        setDobMonth(parts[1]);
-        setDobDay(parts[2]);
-      }
+        const parts = dob.split('-'); 
+        if (parts.length === 3) { 
+          setDobYear(parts[0]); setDobMonth(parts[1]); setDobDay(parts[2]); 
+        }
     } else if (type === 'dob') {
         setDobYear(''); setDobMonth(''); setDobDay('');
     }
-    
     setModalVisible(true);
   };
 
-  const handleSelectOption = (value) => {
+  const handleSelectUnit = (type, value) => {
+    const newUnits = { ...units, [type]: value };
+    updatePreferences({ units: newUnits });
+    setModalVisible(false);
+  };
+
+  const handleSelectGoal = (value) => {
     if (editType === 'steps') updateDailyGoals(value, null);
     if (editType === 'hydration') updateDailyGoals(null, value);
     setModalVisible(false);
   };
 
-  const handleSave = async () => {
+  const handleSaveText = async () => {
+    if (editType === 'name' && textInput) await updateName(textInput);
     if (editType === 'dob') {
-        if (!dobDay || !dobMonth || !dobYear) return;
-        const m = parseInt(dobMonth);
-        const d = parseInt(dobDay);
-        const y = parseInt(dobYear);
-        
-        if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900) {
-            Alert.alert("Invalid Date", "Please check your entry.");
-            return;
-        }
-
-        const today = new Date();
-        const birthDate = new Date(y, m - 1, d);
-        let age = today.getFullYear() - birthDate.getFullYear();
-        const monthDiff = today.getMonth() - birthDate.getMonth();
-        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-            age--;
-        }
-
-        const dobString = `${y}-${dobMonth.padStart(2,'0')}-${dobDay.padStart(2,'0')}`;
-        const res = await updateDOB(dobString, age);
-        if (res.success) {
-            Alert.alert("Success", "Date of birth updated.");
-            setModalVisible(false);
-        } else {
-            Alert.alert("Error", res.error);
-        }
-        return;
+      if (!dobYear || !dobMonth || !dobDay) return;
+      const dateStr = `${dobYear}-${dobMonth.padStart(2,'0')}-${dobDay.padStart(2,'0')}`;
+      const age = new Date().getFullYear() - parseInt(dobYear);
+      await updateDOB(dateStr, age);
     }
-
-    if (!textInput && editType !== 'password') return;
-    
-    if (editType === 'name') {
-      const res = await updateName(textInput);
-      if (res.success) {
-        Alert.alert("Success", "Name updated.");
-        setModalVisible(false);
+    if (editType === 'password') {
+      if (currentPass && newPass) {
+        const res = await updateUserPassword(currentPass, newPass);
+        if (!res.success) Alert.alert("Error", res.error);
+        else Alert.alert("Success", "Password updated");
       }
-      else Alert.alert("Error", res.error);
-    } 
-    else if (editType === 'password') {
-      if (!currentPassInput) { Alert.alert("Missing Input", "Please enter current password."); return; }
-      if (textInput !== confirmInput) { Alert.alert("Mismatch", "New passwords do not match."); return; }
-      if (textInput.length < 6) { Alert.alert("Weak Password", "Must be at least 6 characters."); return; }
-
-      const res = await updateUserPassword(currentPassInput, textInput);
-      if (res.success) { Alert.alert("Success", "Password updated."); setModalVisible(false); }
-      else { Alert.alert("Error", res.error); }
     }
+    setModalVisible(false);
   };
 
-  const handleResetProgress = () => {
-    Alert.alert("Reset Progress?", "This cannot be undone.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Reset", style: "destructive", onPress: async () => { await resetProgress(); Alert.alert("Done", "Progress cleared."); } }
-    ]);
-  };
-
-  // --- RENDER MODAL ---
+  // --- MODAL RENDERER ---
   const renderModalContent = () => {
-    if (editType === 'steps' || editType === 'hydration') {
+    // 1. UNITS LIST
+    if (['weight', 'height', 'volume', 'energy'].includes(editType)) {
       return (
         <FlatList 
-          data={editType === 'steps' ? STEP_OPTIONS : WATER_OPTIONS}
-          keyExtractor={(item) => item.value.toString()}
+          data={UNIT_OPTIONS[editType]}
+          keyExtractor={(item) => item.value}
           renderItem={({ item }) => (
-            <TouchableOpacity style={styles.optionItem} onPress={() => handleSelectOption(item.value)}>
+            <TouchableOpacity style={styles.optionItem} onPress={() => handleSelectUnit(editType, item.value)}>
               <Text style={styles.optionLabel}>{item.label}</Text>
-              <Text style={styles.optionValue}>{item.value.toLocaleString()} {editType === 'steps' ? 'steps' : 'ml'}</Text>
+              {units[editType] === item.value && <Ionicons name="checkmark-circle" size={24} color={colors.primary} />}
             </TouchableOpacity>
           )}
-          style={{ maxHeight: 300 }}
         />
       );
-    } 
-    else if (editType === 'dob') {
+    }
+    // 2. GOALS LIST (UPDATED FOR UNIT CONVERSION)
+    if (editType === 'steps' || editType === 'hydration') {
+       return <FlatList 
+         data={editType === 'steps' ? STEP_OPTIONS : WATER_OPTIONS} 
+         keyExtractor={(item) => item.value.toString()}
+         renderItem={({item}) => {
+            // Determine display text based on type
+            const displayText = editType === 'steps' 
+              ? `${item.value.toLocaleString()} steps` 
+              : converters.displayVolume(item.value); // <--- Auto-converts (e.g. 68 oz)
+
+            return (
+              <TouchableOpacity style={styles.optionItem} onPress={() => handleSelectGoal(item.value)}>
+                  <View>
+                    <Text style={styles.optionLabel}>{item.label}</Text>
+                    <Text style={styles.optionSubLabel}>{displayText}</Text>
+                  </View>
+                  {(editType === 'steps' ? stats.stepGoal : stats.hydrationGoal) === item.value && 
+                    <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                  }
+              </TouchableOpacity>
+            );
+       }} />;
+    }
+    // 3. DOB INPUT
+    if (editType === 'dob') {
         return (
-            <View style={{ width: '100%' }}>
-              <Text style={styles.modalSub}>Enter your Date of Birth (MM / DD / YYYY)</Text>
-              <View style={{flexDirection:'row', justifyContent:'space-between', gap: 10, marginBottom: 15}}>
-                  <TextInput style={[styles.input, {flex: 1, textAlign:'center'}]} value={dobMonth} onChangeText={setDobMonth} placeholder="MM" maxLength={2} keyboardType="number-pad" />
-                  <TextInput style={[styles.input, {flex: 1, textAlign:'center'}]} value={dobDay} onChangeText={setDobDay} placeholder="DD" maxLength={2} keyboardType="number-pad" />
-                  <TextInput style={[styles.input, {flex: 1.5, textAlign:'center'}]} value={dobYear} onChangeText={setDobYear} placeholder="YYYY" maxLength={4} keyboardType="number-pad" />
-              </View>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleSave}><Text style={styles.saveText}>Update Date</Text></TouchableOpacity>
+            <View>
+                <Text style={styles.modalSub}>MM / DD / YYYY</Text>
+                <View style={{flexDirection:'row', gap:12, marginBottom:24}}>
+                    <TextInput style={[styles.input, {flex:1, textAlign:'center'}]} placeholder="MM" value={dobMonth} onChangeText={setDobMonth} maxLength={2} keyboardType="numeric" placeholderTextColor={colors.textDim}/>
+                    <TextInput style={[styles.input, {flex:1, textAlign:'center'}]} placeholder="DD" value={dobDay} onChangeText={setDobDay} maxLength={2} keyboardType="numeric" placeholderTextColor={colors.textDim}/>
+                    <TextInput style={[styles.input, {flex:1.5, textAlign:'center'}]} placeholder="YYYY" value={dobYear} onChangeText={setDobYear} maxLength={4} keyboardType="numeric" placeholderTextColor={colors.textDim}/>
+                </View>
+                <TouchableOpacity style={styles.saveBtn} onPress={handleSaveText}><Text style={styles.saveBtnText}>Save Date</Text></TouchableOpacity>
             </View>
         );
     }
-    else if (editType === 'password') {
-      return (
-        <View style={{ width: '100%' }}>
-          <Text style={styles.modalSub}>Change Password</Text>
-          <TextInput style={styles.input} value={currentPassInput} onChangeText={setCurrentPassInput} placeholder="Current Password" secureTextEntry />
-          <TextInput style={styles.input} value={textInput} onChangeText={setTextInput} placeholder="New Password" secureTextEntry />
-          <TextInput style={styles.input} value={confirmInput} onChangeText={setConfirmInput} placeholder="Verify New Password" secureTextEntry />
-          <TouchableOpacity style={styles.saveBtn} onPress={handleSave}><Text style={styles.saveText}>Update</Text></TouchableOpacity>
-        </View>
-      );
+    // 4. PASSWORD INPUT
+    if (editType === 'password') {
+        return (
+            <View>
+                <TextInput style={styles.input} placeholder="Current Password" value={currentPass} onChangeText={setCurrentPass} secureTextEntry placeholderTextColor={colors.textDim}/>
+                <View style={{height:12}}/>
+                <TextInput style={styles.input} placeholder="New Password" value={newPass} onChangeText={setNewPass} secureTextEntry placeholderTextColor={colors.textDim}/>
+                <TouchableOpacity style={styles.saveBtn} onPress={handleSaveText}><Text style={styles.saveBtnText}>Update Password</Text></TouchableOpacity>
+            </View>
+        );
     }
-    else {
-      return (
-        <View style={{ width: '100%' }}>
-          <Text style={styles.modalSub}>Update Display Name</Text>
-          <TextInput style={styles.input} value={textInput} onChangeText={setTextInput} placeholder="Full Name" autoCapitalize="words" autoFocus />
-          <TouchableOpacity style={styles.saveBtn} onPress={handleSave}><Text style={styles.saveText}>Save</Text></TouchableOpacity>
+    // 5. NAME INPUT
+    return (
+        <View>
+            <TextInput style={styles.input} placeholder="Enter Name" value={textInput} onChangeText={setTextInput} autoCapitalize="words" placeholderTextColor={colors.textDim}/>
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSaveText}><Text style={styles.saveBtnText}>Save Changes</Text></TouchableOpacity>
         </View>
-      );
-    }
+    );
   };
 
   return (
     <SafeAreaView style={styles.container}>
+      
+      {/* HEADER */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.text} />
         </TouchableOpacity>
-        <Text style={styles.pageTitle}>Settings</Text>
-        <View style={{width: 30}} />
+        <Text style={styles.headerTitle}>Settings</Text>
+        <View style={{width: 40}} /> 
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         
-        {/* ACCOUNT */}
-        <Text style={styles.sectionHeader}>Account</Text>
-        <View style={styles.sectionContainer}>
-          <TouchableOpacity style={styles.row} onPress={() => openModal('name')}>
-            <View style={styles.iconCircle}><Ionicons name="person-outline" size={18} color={theme === 'dark' ? '#FFF' : '#333'} /></View>
-            <Text style={[styles.rowTitle, { flex: 1, marginLeft: 12 }]}>Change Name</Text>
-            <Text style={styles.rowValue}>{name}</Text>
-            <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
-          </TouchableOpacity>
-          <View style={styles.divider} />
-          <TouchableOpacity style={styles.row} onPress={() => openModal('dob')}>
-            <View style={styles.iconCircle}><Ionicons name="calendar-outline" size={18} color={theme === 'dark' ? '#FFF' : '#333'} /></View>
-            <Text style={[styles.rowTitle, { flex: 1, marginLeft: 12 }]}>Date of Birth</Text>
-            <Text style={styles.rowValue}>{dob || "Not Set"}</Text>
-            <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
-          </TouchableOpacity>
-          <View style={styles.divider} />
-          <TouchableOpacity style={styles.row} onPress={() => openModal('password')}>
-            <View style={styles.iconCircle}><Ionicons name="lock-closed-outline" size={18} color={theme === 'dark' ? '#FFF' : '#333'} /></View>
-            <Text style={[styles.rowTitle, { flex: 1, marginLeft: 12 }]}>Change Password</Text>
-            <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
-          </TouchableOpacity>
+        {/* ACCOUNT GROUP */}
+        <SectionHeader title="ACCOUNT" colors={colors} styles={styles} />
+        <View style={styles.group}>
+          <SettingRow icon="person" color="#007AFF" label="Name" value={name} onPress={() => openModal('name')} theme={theme} colors={colors} styles={styles} />
+          <SettingRow icon="calendar" color="#FF9500" label="Birthday" value={dob || "Set Date"} onPress={() => openModal('dob')} theme={theme} colors={colors} styles={styles} />
+          <SettingRow icon="lock-closed" color="#FF2D55" label="Password" value="••••••" onPress={() => openModal('password')} isLast theme={theme} colors={colors} styles={styles} />
         </View>
 
-        {/* SYNC */}
-        <Text style={styles.sectionHeader}>Sync</Text>
-        <View style={styles.sectionContainer}>
+        {/* PREFERENCES GROUP */}
+        <SectionHeader title="PREFERENCES" colors={colors} styles={styles} />
+        <View style={styles.group}>
+          {/* Custom Row for Switch */}
           <View style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>Device Calendar</Text>
-              <Text style={styles.rowSubtitle}>Syncs Android & iOS events</Text>
-            </View>
-            <Switch value={preferences?.isAutoSyncEnabled || false} onValueChange={handleDeviceToggle} trackColor={{ false: theme === 'dark' ? "#3e3e3e" : "#e0e0e0", true: colors.primary }} />
+             <View style={[styles.iconContainer, { backgroundColor: '#34C75915' }]}>
+                <Ionicons name="sync" size={20} color="#34C759" />
+             </View>
+             <View style={{ flex: 1 }}>
+               <Text style={[styles.rowLabel, { color: colors.text }]}>Calendar Sync</Text>
+               <Text style={styles.rowSubLabel}>Auto-import scheduled events</Text>
+             </View>
+             <Switch 
+               value={preferences?.isAutoSyncEnabled} 
+               onValueChange={handleDeviceToggle} 
+               trackColor={{true: colors.primary}}
+             />
           </View>
         </View>
 
-        {/* GOALS */}
-        <Text style={styles.sectionHeader}>Goals</Text>
-        <View style={styles.sectionContainer}>
-          <TouchableOpacity style={styles.row} onPress={() => openModal('steps')}>
-            <View style={styles.iconCircle}><MaterialCommunityIcons name="shoe-print" size={18} color={theme === 'dark' ? '#FFF' : '#333'} /></View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={styles.rowTitle}>Steps</Text>
-              <Text style={styles.rowSubtitle}>{stats?.stepGoal?.toLocaleString()}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
-          </TouchableOpacity>
-          <View style={styles.divider} />
-          <TouchableOpacity style={styles.row} onPress={() => openModal('hydration')}>
-             <View style={styles.iconCircle}><MaterialCommunityIcons name="water" size={18} color={theme === 'dark' ? '#FFF' : '#333'} /></View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={styles.rowTitle}>Hydration</Text>
-              <Text style={styles.rowSubtitle}>{stats?.hydrationGoal?.toLocaleString()} ml</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
-          </TouchableOpacity>
+        {/* GOALS GROUP */}
+        <SectionHeader title="DAILY GOALS" colors={colors} styles={styles} />
+        <View style={styles.group}>
+          <SettingRow icon="walk" color="#5856D6" label="Step Goal" value={stats?.stepGoal?.toLocaleString()} onPress={() => openModal('steps')} theme={theme} colors={colors} styles={styles} />
+          {/* UPDATED: Uses converter for Hydration Display */}
+          <SettingRow 
+             icon="water" 
+             color="#0A84FF" 
+             label="Hydration Goal" 
+             value={converters.displayVolume(stats?.hydrationGoal)} 
+             onPress={() => openModal('hydration')} 
+             isLast 
+             theme={theme} colors={colors} styles={styles} 
+          />
         </View>
 
-        {/* DATA */}
-        <Text style={styles.sectionHeader}>Data</Text>
-        <View style={styles.sectionContainer}>
-          <TouchableOpacity style={styles.row} onPress={handleResetProgress}>
-            <View style={[styles.iconCircle, { backgroundColor: 'rgba(255, 59, 48, 0.1)' }]}>
-              <Ionicons name="trash-outline" size={18} color={colors.danger || '#FF3B30'} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.rowTitle, { color: colors.danger || '#FF3B30' }]}>Reset Progress</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
+        {/* UNITS GROUP */}
+        <SectionHeader title="UNITS OF MEASUREMENT" colors={colors} styles={styles} />
+        <View style={styles.group}>
+          <SettingRow icon="scale" color="#AF52DE" label="Weight" value={units.weight.toUpperCase()} onPress={() => openModal('weight')} theme={theme} colors={colors} styles={styles} />
+          <SettingRow icon="resize" color="#FF3B30" label="Height" value={units.height.toUpperCase()} onPress={() => openModal('height')} theme={theme} colors={colors} styles={styles} />
+          <SettingRow icon="flask" color="#00C7BE" label="Liquids" value={units.volume.toUpperCase()} onPress={() => openModal('volume')} theme={theme} colors={colors} styles={styles} />
+          <SettingRow icon="flash" color="#FFCC00" label="Energy" value={units.energy.toUpperCase()} onPress={() => openModal('energy')} isLast theme={theme} colors={colors} styles={styles} />
+        </View>
+
+        {/* DANGER ZONE */}
+        <SectionHeader title="DATA & PRIVACY" colors={colors} styles={styles} />
+        <View style={styles.group}>
+          <TouchableOpacity 
+            style={styles.row} 
+            onPress={() => Alert.alert("Reset Progress?", "This action cannot be undone.", [{ text: "Cancel", style: 'cancel' }, { text: "Reset", style: 'destructive', onPress: resetProgress }])}
+          >
+             <View style={[styles.iconContainer, { backgroundColor: '#FF3B3015' }]}>
+                <Ionicons name="trash-bin" size={20} color="#FF3B30" />
+             </View>
+             <Text style={[styles.rowLabel, { color: '#FF3B30' }]}>Reset All Progress</Text>
           </TouchableOpacity>
         </View>
 
         <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
             <Text style={styles.logoutText}>Log Out</Text>
         </TouchableOpacity>
-        <View style={{ height: 50 }} />
+        
+        <Text style={styles.versionText}>v1.0.2 • UFitness</Text>
+        <View style={{height: 40}} />
+
       </ScrollView>
 
-      <Modal animationType="fade" transparent={true} visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{editType === 'name' ? 'Update Name' : editType === 'dob' ? 'Date of Birth' : 'Update Setting'}</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close-circle" size={28} color={colors.textDim} /></TouchableOpacity>
+      {/* GLOBAL MODAL */}
+      <Modal transparent visible={modalVisible} animationType="fade" onRequestClose={() => setModalVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setModalVisible(false)}>
+            <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+                <View style={styles.modalHeader}>
+                    <Text style={styles.modalTitle}>
+                      {['weight','height','volume','energy'].includes(editType) ? `Select ${editType}` : `Edit ${editType}`}
+                    </Text>
+                    <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.closeBtn}>
+                      <Ionicons name="close" size={20} color={colors.textDim} />
+                    </TouchableOpacity>
+                </View>
+                {renderModalContent()}
             </View>
-            {renderModalContent()}
-          </View>
-        </View>
+        </TouchableOpacity>
       </Modal>
+
     </SafeAreaView>
   );
 };
 
 const getStyles = (theme, colors) => StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  header: { paddingHorizontal: 20, paddingVertical: 15, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  backBtn: { padding: 8, borderRadius: 20, backgroundColor: colors.surface },
-  pageTitle: { fontSize: 20, fontWeight: 'bold', color: colors.text },
+  
+  // Header
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12 },
+  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, justifyContent: 'center', alignItems: 'center' },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
+
   scrollContent: { padding: 20 },
-  sectionHeader: { color: colors.textDim, fontSize: 12, fontWeight: '700', marginBottom: 10, marginLeft: 10, textTransform: 'uppercase', letterSpacing: 1 },
-  sectionContainer: { backgroundColor: colors.surface, borderRadius: 20, paddingHorizontal: 16, marginBottom: 25, borderWidth: 1, borderColor: colors.border },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 16 },
-  rowTitle: { color: colors.text, fontSize: 16, fontWeight: '600' },
-  rowValue: { color: colors.textDim, fontSize: 14, marginRight: 8 },
-  rowSubtitle: { color: colors.textDim, fontSize: 12, marginTop: 2 },
-  divider: { height: 1, backgroundColor: colors.border },
-  iconCircle: { width: 32, height: 32, borderRadius: 10, backgroundColor: theme === 'dark' ? 'rgba(255,255,255,0.1)' : '#F2F2F7', alignItems: 'center', justifyContent: 'center' },
-  logoutBtn: { backgroundColor: colors.surface, borderRadius: 16, padding: 18, alignItems: 'center', marginBottom: 12, borderWidth: 1, borderColor: colors.border },
-  logoutText: { fontSize: 16, fontWeight: '700', color: '#FF3B30' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 20 },
-  modalContent: { backgroundColor: theme === 'dark' ? '#1C1C1E' : '#FFF', borderRadius: 24, padding: 20 },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', color: colors.text },
-  modalSub: { fontSize: 14, color: '#AAA', marginBottom: 15 },
-  optionItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
-  optionLabel: { fontSize: 16, color: colors.text, fontWeight: '500' },
-  optionValue: { fontSize: 14, color: colors.primary, fontWeight: '700' },
-  input: { backgroundColor: theme === 'dark' ? '#2C2C2E' : '#F2F2F7', color: colors.text, fontSize: 16, padding: 14, borderRadius: 12, marginBottom: 12 },
-  saveBtn: { backgroundColor: colors.primary, padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 10 },
-  saveText: { color: '#FFF', fontWeight: 'bold' },
+  
+  // Sections
+  sectionHeader: { fontSize: 13, fontWeight: '600', marginBottom: 8, marginLeft: 12, marginTop: 24, letterSpacing: 0.5 },
+  group: { backgroundColor: colors.surface, borderRadius: 16, overflow: 'hidden' },
+  
+  // Rows
+  row: { flexDirection: 'row', alignItems: 'center', padding: 16, backgroundColor: colors.surface },
+  iconContainer: { width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  rowLabel: { flex: 1, fontSize: 16, fontWeight: '500' },
+  rowSubLabel: { fontSize: 12, color: colors.textDim, marginTop: 2 },
+  rowRight: { flexDirection: 'row', alignItems: 'center' },
+  rowValue: { fontSize: 15, color: colors.textDim, marginRight: 4 },
+
+  // Buttons
+  logoutBtn: { marginTop: 30, backgroundColor: colors.surface, paddingVertical: 16, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: colors.border },
+  logoutText: { color: '#FF3B30', fontSize: 16, fontWeight: '700' },
+  versionText: { textAlign: 'center', color: colors.textDim, marginTop: 20, fontSize: 12 },
+
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
+  modalContent: { backgroundColor: theme === 'dark' ? '#1C1C1E' : '#FFF', borderRadius: 24, padding: 24, shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: colors.text, textTransform: 'capitalize' },
+  closeBtn: { padding: 4, backgroundColor: colors.background, borderRadius: 12 },
+  modalSub: { fontSize: 13, color: colors.textDim, marginBottom: 12, textAlign: 'center' },
+
+  // Modal Options
+  optionItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.border },
+  optionLabel: { fontSize: 16, fontWeight: '500', color: colors.text },
+  optionSubLabel: { fontSize: 12, color: colors.textDim },
+  
+  // Inputs
+  input: { backgroundColor: colors.background, borderRadius: 12, padding: 14, fontSize: 16, color: colors.text, borderWidth: 1, borderColor: colors.border },
+  saveBtn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 14, alignItems: 'center', marginTop: 20 },
+  saveBtnText: { color: '#FFF', fontSize: 16, fontWeight: '700' }
 });
 
 export default SettingsScreen;

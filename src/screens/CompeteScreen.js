@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  View, Text, StyleSheet, FlatList, SafeAreaView, 
+  View, Text, StyleSheet, FlatList,
   useColorScheme, TouchableOpacity, Image, ActivityIndicator 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useUser } from '../context/UserContext';
 import { PALETTE } from '../constants/theme';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const CompeteScreen = ({ navigation }) => {
   const theme = useColorScheme() || 'dark';
